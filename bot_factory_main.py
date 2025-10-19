@@ -273,9 +273,10 @@ def main():
     fallbacks=[CommandHandler('cancel', cancel)],
     per_chat=True,
     per_user=True,
-    per_message=True,   # << هنا أضف السطر
+    per_message=True,   # << هذا السطر الجديد
     name='factory_conv'
 )
+
 
 
     app.add_handler(CommandHandler('start', start))
