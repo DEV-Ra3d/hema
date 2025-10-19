@@ -261,20 +261,22 @@ def main():
     app = ApplicationBuilder().token(token).build()
 
     conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(callback_handler)],
-        states={
-            ADD_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_token_handler)],
-            BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_text_handler)],
-            SET_LIMIT_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_limit_user_handler)],
-            SET_LIMIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_limit_value_handler)],
-            INCREASE_USER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, increase_user_id_handler)],
-            INCREASE_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, increase_amount_handler)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        per_chat=True,
-        per_user=True,
-        name='factory_conv'
-    )
+    entry_points=[CallbackQueryHandler(callback_handler)],
+    states={
+        ADD_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_token_handler)],
+        BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_text_handler)],
+        SET_LIMIT_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_limit_user_handler)],
+        SET_LIMIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_limit_value_handler)],
+        INCREASE_USER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, increase_user_id_handler)],
+        INCREASE_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, increase_amount_handler)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+    per_chat=True,
+    per_user=True,
+    per_message=True,   # << هنا أضف السطر
+    name='factory_conv'
+)
+
 
     app.add_handler(CommandHandler('start', start))
     app.add_handler(conv)
