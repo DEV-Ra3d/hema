@@ -15,15 +15,16 @@ if not API_TOKEN:
 
 bot = TeleBot(API_TOKEN)
 
-REACTIONS = ["👍", "❤️", "🔥", "🥰", "👏", "😁"]
+REACTIONS = ["\uD83D\uDE00", "\u2764\uFE0F", "\uD83D\uDE0E", "\uD83D\uDE09", "\uD83D\uDE48", "\uD83D\uDE0A"]
 
 def send_message_react(chat_id, message_id, emoji):
     """Attempt to call setMessageReaction endpoint; fallback to replying with text if not available."""
     url = f"https://api.telegram.org/bot{API_TOKEN}/setMessageReaction"
+    # fixed malformed braces and ensure valid JSON payload for 'reaction'
     payload = {
         'chat_id': chat_id,
         'message_id': message_id,
-        'reaction': json.dumps([{{'type':'emoji','emoji':emoji}}])
+        'reaction': json.dumps([{'type': 'emoji', 'emoji': emoji}])
     }
     try:
         r = requests.post(url, data=payload, timeout=10)
@@ -31,10 +32,21 @@ def send_message_react(chat_id, message_id, emoji):
             return r.json()
     except Exception as e:
         log.debug('reaction endpoint failed: %s', e)
-    # Fallback
+
+    # Fallback: reply with a text message indicating the reaction
     try:
-        bot.send_message(chat_id, f'i react with {emoji}', reply_to_message_id=message_id)
-    except Exception as e:
+        # prefer using TeleBot instance if available
+        if 'bot' in globals() and hasattr(bot, 'send_message'):
+            bot.send_message(chat_id, f'i react with {emoji}', reply_to_message_id=message_id)
+        else:
+            # fallback to HTTP sendMessage endpoint
+            fallback_url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+            requests.post(fallback_url, data={
+                'chat_id': chat_id,
+                'text': f'i react with {emoji}',
+                'reply_to_message_id': message_id
+            }, timeout=10)
+    except Exception:
         log.exception('failed fallback reply')
     return None
 
@@ -43,7 +55,7 @@ def handle_all(message: Message):
     emoji = random.choice(REACTIONS)
     try:
         send_message_react(message.chat.id, message.message_id, emoji)
-    except Exception as e:
+    except Exception:
         log.exception('error sending reaction')
 
 if __name__ == '__main__':
