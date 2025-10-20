@@ -1,2 +1,13 @@
 python-telegram-bot==20.5
-aiosqlite==0.19.0
+pyTelegramBotAPI==4.14.0
+requests==2.31.0
+sqlite3
+asyncio
+logging
+datetime
+os
+json
+random
+threading
+time
+schedule==1.2.0
