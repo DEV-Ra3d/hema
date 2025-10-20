@@ -1,0 +1,396 @@
+"""
+إدارة قاعدة البيانات - Database Management
+"""
+import sqlite3
+import datetime
+import json
+import logging
+import os
+from typing import List, Dict, Optional, Tuple
+from config import DB_PATH, BACKUP_PATH
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+class DatabaseManager:
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self.init_db()
+    
+    def init_db(self):
+        """إنشاء قاعدة البيانات والجداول"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            
+            # جدول البوتات
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS bots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    bot_username TEXT,
+                    date_created TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    last_seen TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    user_count INTEGER DEFAULT 0
+                )
+            ''')
+            
+            # جدول حدود المستخدمين
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS user_limits (
+                    user_id INTEGER PRIMARY KEY,
+                    allow_count INTEGER NOT NULL,
+                    updated_by INTEGER,
+                    updated_at TEXT
+                )
+            ''')
+            
+            # جدول مستخدمي البوتات
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    joined_at TEXT NOT NULL,
+                    last_activity TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    FOREIGN KEY (bot_id) REFERENCES bots (id),
+                    UNIQUE(bot_id, user_id)
+                )
+            ''')
+            
+            # جدول الإحصائيات
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS bot_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    messages_sent INTEGER DEFAULT 0,
+                    messages_received INTEGER DEFAULT 0,
+                    new_users INTEGER DEFAULT 0,
+                    active_users INTEGER DEFAULT 0,
+                    FOREIGN KEY (bot_id) REFERENCES bots (id),
+                    UNIQUE(bot_id, date)
+                )
+            ''')
+            
+            # جدول سجل الأنشطة
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    timestamp TEXT NOT NULL,
+                    ip_address TEXT
+                )
+            ''')
+            
+            # جدول رسائل الترحيب المخصصة
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS welcome_messages (
+                    bot_id INTEGER PRIMARY KEY,
+                    owner_welcome TEXT,
+                    user_welcome TEXT,
+                    group_welcome TEXT,
+                    enabled INTEGER DEFAULT 1,
+                    FOREIGN KEY (bot_id) REFERENCES bots (id)
+                )
+            ''')
+            
+            # إنشاء الفهارس لتحسين الأداء
+            indexes = [
+                'CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id)',
+                'CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status)',
+                'CREATE INDEX IF NOT EXISTS idx_bot_users_bot ON bot_users(bot_id)',
+                'CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id)',
+                'CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)',
+                'CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp ON activity_log(timestamp)'
+            ]
+            
+            for index in indexes:
+                cur.execute(index)
+            
+            con.commit()
+            con.close()
+            log.info("Database initialized successfully")
+            
+        except Exception as e:
+            log.error(f"Database initialization error: {e}")
+            raise
+    
+    def get_user_limit(self, user_id: int) -> int:
+        """الحصول على حد المستخدم"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('SELECT allow_count FROM user_limits WHERE user_id=?', (user_id,))
+            result = cur.fetchone()
+            con.close()
+            return result[0] if result else 3  # الحد الافتراضي
+        except Exception as e:
+            log.error(f"Error getting user limit: {e}")
+            return 3
+    
+    def set_user_limit(self, user_id: int, count: int, updated_by: int = None):
+        """تعيين حد المستخدم"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                INSERT INTO user_limits(user_id, allow_count, updated_by, updated_at) 
+                VALUES(?,?,?,?) 
+                ON CONFLICT(user_id) DO UPDATE SET 
+                allow_count=excluded.allow_count,
+                updated_by=excluded.updated_by,
+                updated_at=excluded.updated_at
+            ''', (user_id, count, updated_by, datetime.datetime.utcnow().isoformat()))
+            con.commit()
+            con.close()
+            self.log_activity(updated_by or user_id, 'set_limit', f'Set limit {count} for user {user_id}')
+        except Exception as e:
+            log.error(f"Error setting user limit: {e}")
+            raise
+    
+    def count_user_bots(self, user_id: int) -> int:
+        """عد بوتات المستخدم النشطة"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('SELECT COUNT(*) FROM bots WHERE owner_id=? AND status="active"', (user_id,))
+            result = cur.fetchone()[0]
+            con.close()
+            return result
+        except Exception as e:
+            log.error(f"Error counting user bots: {e}")
+            return 0
+    
+    def add_bot_record(self, owner_id: int, token: str, bot_username: str = None) -> int:
+        """إضافة سجل بوت جديد"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                INSERT INTO bots(owner_id, token, bot_username, date_created, status, last_seen) 
+                VALUES(?,?,?,?,?,?)
+            ''', (owner_id, token, bot_username, datetime.datetime.utcnow().isoformat(), 'active', datetime.datetime.utcnow().isoformat()))
+            bot_id = cur.lastrowid
+            con.commit()
+            con.close()
+            self.log_activity(owner_id, 'add_bot', f'Added bot {bot_id}')
+            return bot_id
+        except Exception as e:
+            log.error(f"Error adding bot record: {e}")
+            raise
+    
+    def delete_bot_record(self, bot_id: int, deleted_by: int = None):
+        """حذف سجل البوت"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('UPDATE bots SET status="deleted" WHERE id=?', (bot_id,))
+            con.commit()
+            con.close()
+            self.log_activity(deleted_by, 'delete_bot', f'Deleted bot {bot_id}')
+        except Exception as e:
+            log.error(f"Error deleting bot record: {e}")
+            raise
+    
+    def get_user_bots(self, user_id: int) -> List[Tuple]:
+        """الحصول على بوتات المستخدم"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                SELECT id, token, bot_username, date_created, last_seen, message_count, user_count 
+                FROM bots WHERE owner_id=? AND status="active"
+            ''', (user_id,))
+            rows = cur.fetchall()
+            con.close()
+            return rows
+        except Exception as e:
+            log.error(f"Error getting user bots: {e}")
+            return []
+    
+    def get_all_bots(self) -> List[Tuple]:
+        """الحصول على جميع البوتات"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                SELECT id, owner_id, token, bot_username, date_created, status, last_seen, message_count, user_count 
+                FROM bots ORDER BY date_created DESC
+            ''')
+            rows = cur.fetchall()
+            con.close()
+            return rows
+        except Exception as e:
+            log.error(f"Error getting all bots: {e}")
+            return []
+    
+    def get_bot_info(self, bot_id: int) -> Optional[Dict]:
+        """الحصول على معلومات البوت"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                SELECT id, owner_id, token, bot_username, date_created, status, last_seen, message_count, user_count 
+                FROM bots WHERE id=?
+            ''', (bot_id,))
+            row = cur.fetchone()
+            con.close()
+            
+            if row:
+                return {
+                    'id': row[0],
+                    'owner_id': row[1],
+                    'token': row[2],
+                    'bot_username': row[3],
+                    'date_created': row[4],
+                    'status': row[5],
+                    'last_seen': row[6],
+                    'message_count': row[7],
+                    'user_count': row[8]
+                }
+            return None
+        except Exception as e:
+            log.error(f"Error getting bot info: {e}")
+            return None
+    
+    def update_bot_stats(self, bot_id: int, message_count: int = None, user_count: int = None):
+        """تحديث إحصائيات البوت"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            
+            updates = []
+            params = []
+            
+            if message_count is not None:
+                updates.append('message_count = ?')
+                params.append(message_count)
+            
+            if user_count is not None:
+                updates.append('user_count = ?')
+                params.append(user_count)
+            
+            updates.append('last_seen = ?')
+            params.append(datetime.datetime.utcnow().isoformat())
+            params.append(bot_id)
+            
+            if updates:
+                query = f'UPDATE bots SET {", ".join(updates)} WHERE id = ?'
+                cur.execute(query, params)
+                con.commit()
+            
+            con.close()
+        except Exception as e:
+            log.error(f"Error updating bot stats: {e}")
+    
+    def log_activity(self, user_id: int, action: str, details: str = None, ip_address: str = None):
+        """تسجيل النشاط"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                INSERT INTO activity_log(user_id, action, details, timestamp, ip_address) 
+                VALUES(?,?,?,?,?)
+            ''', (user_id, action, details, datetime.datetime.utcnow().isoformat(), ip_address))
+            con.commit()
+            con.close()
+        except Exception as e:
+            log.error(f"Error logging activity: {e}")
+    
+    def get_activity_log(self, limit: int = 100) -> List[Tuple]:
+        """الحصول على سجل الأنشطة"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute('''
+                SELECT user_id, action, details, timestamp 
+                FROM activity_log 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            ''', (limit,))
+            rows = cur.fetchall()
+            con.close()
+            return rows
+        except Exception as e:
+            log.error(f"Error getting activity log: {e}")
+            return []
+    
+    def backup_database(self) -> str:
+        """إنشاء نسخة احتياطية من قاعدة البيانات"""
+        try:
+            if not os.path.exists(BACKUP_PATH):
+                os.makedirs(BACKUP_PATH)
+            
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"{BACKUP_PATH}backup_{timestamp}.db"
+            
+            # نسخ قاعدة البيانات
+            con_source = sqlite3.connect(self.db_path)
+            con_backup = sqlite3.connect(backup_file)
+            con_source.backup(con_backup)
+            con_source.close()
+            con_backup.close()
+            
+            log.info(f"Database backup created: {backup_file}")
+            return backup_file
+        except Exception as e:
+            log.error(f"Error creating database backup: {e}")
+            raise
+    
+    def get_dashboard_stats(self) -> Dict:
+        """الحصول على إحصائيات لوحة التحكم"""
+        try:
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            
+            # إحصائيات عامة
+            cur.execute('SELECT COUNT(*) FROM bots WHERE status="active"')
+            active_bots = cur.fetchone()[0]
+            
+            cur.execute('SELECT COUNT(*) FROM bots WHERE status="deleted"')
+            deleted_bots = cur.fetchone()[0]
+            
+            cur.execute('SELECT COUNT(DISTINCT owner_id) FROM bots WHERE status="active"')
+            active_users = cur.fetchone()[0]
+            
+            cur.execute('SELECT SUM(message_count) FROM bots WHERE status="active"')
+            total_messages = cur.fetchone()[0] or 0
+            
+            cur.execute('SELECT SUM(user_count) FROM bots WHERE status="active"')
+            total_bot_users = cur.fetchone()[0] or 0
+            
+            # البوتات الأكثر نشاطاً
+            cur.execute('''
+                SELECT id, bot_username, message_count, user_count 
+                FROM bots WHERE status="active" 
+                ORDER BY message_count DESC 
+                LIMIT 5
+            ''')
+            top_bots = cur.fetchall()
+            
+            con.close()
+            
+            return {
+                'active_bots': active_bots,
+                'deleted_bots': deleted_bots,
+                'active_users': active_users,
+                'total_messages': total_messages,
+                'total_bot_users': total_bot_users,
+                'top_bots': top_bots
+            }
+        except Exception as e:
+            log.error(f"Error getting dashboard stats: {e}")
+            return {}
+
+# إنشاء مثيل من مدير قاعدة البيانات
+db = DatabaseManager()
